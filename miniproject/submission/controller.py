@@ -23,11 +23,15 @@ class Controller:
         self.aversive_gain = 80.0
 
         # === Paramètres de vision ===
-        self.obj_threshold = 0.3         # pixel plus sombre = obstacle
-        self.obstacle_area_thr = 0.02    # aire min pour déclencher l'évitement
-        self.visual_gain = 5.0           # force de la répulsion
+        self.obj_threshold = 0.30        # pixel plus sombre = obstacle
+        self.obstacle_area_thr = 0.20    # aire min pour déclencher l'évitement
+        self.visual_gain = 10.0           # force de la répulsion
 
-        # === Timing des décisions ===
+        # === Paramètres du vent ===
+        self.wind_gain = 1.0           # placeholder, à tuner sur Level 3
+        self.wind_threshold = 0.5      # > 0.28 (mesuré sans vent) pour éviter faux positifs
+
+        # === Timing des décisions === 
         self.decision_interval = 0.05    # secondes
         self._last_decision_time = -np.inf
         self._last_control_signal = np.array([1.0, 1.0])
@@ -78,7 +82,7 @@ class Controller:
 
         drive = np.ones(2)
         side_to_modulate = int(effective_bias_norm > 0)
-        drive[side_to_modulate] -= np.abs(effective_bias_norm) * 0.9
+        drive[side_to_modulate] -= np.abs(effective_bias_norm) * 0.75
         return drive
 
     def _detect_obstacles(self, ommatidia_readouts):
@@ -96,12 +100,45 @@ class Controller:
         avoidance_active = (area_L > self.obstacle_area_thr) or \
                            (area_R > self.obstacle_area_thr)
         return area_L, area_R, avoidance_active
+    
+    def _compute_wind_drive(self, antenna_data):
+        """Drive basé sur le vent (oriente la mouche face au vent = upwind).
+        Retourne (drive (direction (2,)), wind_detected (bool de detection du vent)).
+        """
+        # Garde pour chaque coté les composantes de deviation (sans w)
+        deviation_l = antenna_data['l']['qpos'][1:]
+        deviation_r = antenna_data['r']['qpos'][1:]
 
-    def _compute_control_signal(self, odor_intensities, ommatidia_readouts):
-        """Fusionne olfaction + vision. L'évitement a priorité sur l'attraction."""
+        # Addition des déviations de chaque antennes et controle si vent obtenu est significatif
+        wind_magnitude = (np.linalg.norm(deviation_l) + np.linalg.norm(deviation_r))
+        wind_detected = wind_magnitude > self.wind_threshold
+
+        if not wind_detected:
+            return np.ones(2), False
+
+        # Calcul du biais du vent et normalisation
+        wind_bias = self.wind_gain * (deviation_l[2] + deviation_r[2])
+        effective_bias_norm = np.tanh(wind_bias ** 2) * np.sign(wind_bias)
+        assert np.sign(effective_bias_norm) == np.sign(wind_bias)
+
+        drive = np.ones(2)
+        side_to_modulate = int(effective_bias_norm > 0)
+        modulation_amount = np.abs(effective_bias_norm) * 0.9
+        drive[side_to_modulate] -= modulation_amount
+
+        return drive, wind_detected
+    
+
+    def _compute_control_signal(self, odor_intensities, ommatidia_readouts, antenna_data):
+        """Fusionne olfaction + vent + vision. L'évitement a priorité sur le vent qui a priorité sur l'attraction."""
         
         # Drive olfactif (comportement par défaut : va vers la banane)
         drive = self._compute_olfactory_drive(odor_intensities)
+
+        # Drive du vent (écrase l'olfaction si detecté)
+        wind_drive, wind_detected = self._compute_wind_drive(antenna_data)
+        if wind_detected:
+            drive = wind_drive
 
         # Détection d'obstacles
         area_L, area_R, avoidance_active = self._detect_obstacles(ommatidia_readouts)
@@ -123,6 +160,7 @@ class Controller:
                 drive[0] = max(1.0 - self.visual_gain * total * 0.5, 0.1)
                 drive[1] = 1.2
 
+        drive = np.clip(drive * 1.15, 0.05, 1.4)
         return drive
 
     def step(self, sim: MiniprojectSimulation):
@@ -138,7 +176,8 @@ class Controller:
         if current_time - self._last_decision_time >= self.decision_interval:
             odor = sim.get_olfaction(sim.fly.name)
             ommatidia = sim.get_ommatidia_readouts(sim.fly.name)
-            self._last_control_signal = self._compute_control_signal(odor, ommatidia)
+            antenna = sim.get_antenna_data(sim.fly.name)
+            self._last_control_signal = self._compute_control_signal(odor, ommatidia, antenna)
             self._last_decision_time = current_time
 
         # VNC : CPG + adhésion
