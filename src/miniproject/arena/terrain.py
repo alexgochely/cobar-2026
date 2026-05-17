@@ -43,7 +43,7 @@ class RollingHills(FlatGroundWorld):
         pos=(0, 0, 0),
         s=256,
         xy_scale=0.5,
-        amplitude=8,
+        amplitude=6.0,
         rng: np.random.Generator | None = None,
     ):
         super().__init__(name=name)
@@ -55,7 +55,7 @@ class RollingHills(FlatGroundWorld):
             size_x=s,
             size_y=s,
             rng=rng or np.random.default_rng(seed=0),
-            blur_sigma=6.0,
+            blur_sigma=8.0,
         )
         self.height_map = height_map
         self.hfield_pos = np.asarray(pos, dtype=np.float64)

@@ -8,8 +8,12 @@ class DragonFlyMixin:
     @cached_property
     def _dragonflies(self):
         return []
+    
+    @cached_property
+    def _dragonfly_geoms(self):
+        return []
 
-    def add_dragonfly(self, scale=0.6):
+    def add_dragonfly(self, scale=0.5):
         name = uuid.uuid4().hex
         parent = self.mjcf_root.worldbody
         dragonfly = parent.add("body", name=name, pos=(0, 0, 0), mocap=True)
@@ -71,10 +75,18 @@ class DragonFlyMixin:
             pos=(0, -6 * scale, 0),
             rgba=(0.7, 0.9, 1.0, 0.35),
         )
-        self.ground_contact_geoms.extend(
-            [thorax_geom, head_geom, abdomen_geom, wing_l_geom, wing_r_geom]
-        )
+        self.ground_contact_geoms.extend([thorax_geom, head_geom, abdomen_geom])
         self._dragonflies.append(dragonfly)
+        self._dragonfly_head = head_geom
+        self._dragonfly_geoms.append(
+            {
+                "thorax": thorax_geom,
+                "head": head_geom,
+                "abdomen": abdomen_geom,
+                "wing_l": wing_l_geom,
+                "wing_r": wing_r_geom
+            }
+        )
         return dragonfly
 
     @cache
@@ -86,8 +98,13 @@ class DragonFlyMixin:
             )
         ]
 
-    def set_dragonfly_pose(self, sim, pos, euler_ZYX, dragonfly_idx=0):
+    def set_dragonfly_pose(self, sim, pos, euler_ZYX=None, dragonfly_idx=0):
         mocap_id = self._get_dragonfly_mocap_id(sim, dragonfly_idx)
-        quat = transformations.euler_to_quat(euler_ZYX, "ZYX")
         sim.mj_data.mocap_pos[mocap_id] = pos
-        sim.mj_data.mocap_quat[mocap_id] = quat
+        if euler_ZYX is not None:
+            quat = transformations.euler_to_quat(euler_ZYX, "ZYX")
+            sim.mj_data.mocap_quat[mocap_id] = quat
+
+    def set_dragonfly_rgba(self, sim, rgba, dragonfly_idx=0, segment="thorax"):
+        geom = sim.mj_model.geom(self._dragonfly_geoms[dragonfly_idx][segment].name)
+        geom.rgba[:] = rgba

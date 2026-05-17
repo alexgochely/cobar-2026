@@ -148,13 +148,13 @@ class MiniprojectSimulation(Simulation):
                 fly.add_tracking_camera(
                     name="backcam",
                     mode="fixed",
-                    pos_offset=(-15, 0, 4),
-                    rotation=Rotation3D("euler", (1.3, 0, -np.pi / 2)),
-                    fovy=40,
+                    pos_offset=(-15, 0, 10),
+                    rotation=Rotation3D("euler", (1.2, 0, -np.pi / 2)),
+                    fovy=50,
                 )
             )
 
-        amplitude = 10 if self.enable_terrain else np.finfo(float).eps
+        amplitude = 8 if self.enable_terrain else np.finfo(float).eps
         world = MiniprojectWorld(amplitude=amplitude, rng=rng)
         banana_xy = sample_polar((29, 31), (-np.pi, np.pi), rng)
         world.add_banana_slice(pos=banana_xy)
@@ -215,149 +215,115 @@ class MiniprojectSimulation(Simulation):
         self._thorax_body_id = self._internal_bodyids_by_fly[self._fly_name][
             self._thorax_idx
         ]
-
-        self._dragonfly_dt = self.mj_model.opt.timestep
-        self._dragonfly_cruise_height = 11.0
-        self._dragonfly_hit_height_offset = 0.35
-        self._dragonfly_rest_pos = np.array([0.0, 0.0, 80.0])
-        self._dragonfly_rest_yaw = np.pi
-
-        self._dragonfly_approach_vel = 50.0
-        self._dragonfly_approach_start_radius = 20.0
-        self._dragonfly_overshoot_dist = 5.0
+        self._dragonfly_target_offset = np.array([-1, 0, -0.5])
+        self._dragonfly_open_loop_dist = 15.0
+        self._dragonfly_speed_looming = 15.0
+        self._dragonfly_max_speed_open_loop = 100.0
+        self._dragonfly_acceleration_open_loop = (100 - 15) / 3000
         self._dragonfly_approach_angles = np.array([np.pi / 4, 3 * np.pi / 4])
-
+        self._dragonfly_spawn_radius = 30.0
+        self._dragonfly_spawn_z_offset_range = (5.0, 10.0)
+        self._dragonfly_spawn_angle_range = (0, 3 * np.pi / 4)
         looming_lambda = 1.0
-        self._dragonfly_p_no_looming = np.exp(-looming_lambda * self._dragonfly_dt)
-        interception_time = (
-            self._dragonfly_approach_start_radius / self._dragonfly_approach_vel
-        )
-        self._dragonfly_n_interception_steps = max(
-            1, int(interception_time / self._dragonfly_dt)
-        )
-        self._dragonfly_n_overshoot_steps = max(
-            1,
-            int(
-                (self._dragonfly_overshoot_dist / self._dragonfly_approach_vel)
-                / self._dragonfly_dt
-            ),
-        )
-        self._dragonfly_trajectory = np.zeros(
-            (
-                self._dragonfly_n_interception_steps
-                + self._dragonfly_n_overshoot_steps,
-                2,
-            )
-        )
-        self._dragonfly_z_trajectory = np.full(
-            len(self._dragonfly_trajectory),
-            self._dragonfly_cruise_height,
-            dtype=float,
-        )
-
-        self._dragonfly_vel_buffer_size = 500
-        self._dragonfly_velocities = np.full((self._dragonfly_vel_buffer_size, 2), np.nan)
-        self._dragonfly_velocities_idx = 0
-        self._dragonfly_prev_fly_xy = None
-
+        self._dragonfly_p_no_looming = np.exp(-looming_lambda * self.timestep)
         self._dragonfly_is_looming = False
-        self._dragonfly_traj_advancement = 0
-        self._dragonfly_attack_yaw = np.pi
+        self._dragonfly_is_open_loop = False
+        self._dragonfly_open_loop_steps = 5000
+        self._dragonfly_open_loop_current_step = 0
+        self._dragonfly_open_loop_vel = np.zeros(3, dtype=float)
         self._set_dragonfly_rest_pose()
 
     def _get_fly_state(self):
         thorax_pos = self.get_body_positions(self._fly_name)[self._thorax_idx].copy()
-        fly_xy = thorax_pos[:2]
-        fly_z = thorax_pos[2]
         xmat = self.mj_data.xmat[self._thorax_body_id].reshape(3, 3)
-        heading_vec = xmat[:2, 0]
-        return fly_xy, fly_z, heading_vec
-
-    def _update_dragonfly_velocity_buffer(self, fly_xy):
-        if self._dragonfly_prev_fly_xy is None:
-            fly_vel = np.zeros(2, dtype=float)
-        else:
-            fly_vel = (fly_xy - self._dragonfly_prev_fly_xy) / self._dragonfly_dt
-        self._dragonfly_prev_fly_xy = fly_xy
-        self._dragonfly_velocities[
-            self._dragonfly_velocities_idx % self._dragonfly_vel_buffer_size
-        ] = fly_vel
-        self._dragonfly_velocities_idx += 1
-
-    def _get_mean_fly_velocity(self):
-        mean_vel = np.nanmean(self._dragonfly_velocities, axis=0)
-        if np.isnan(mean_vel).any():
-            return np.zeros(2, dtype=float)
-        return mean_vel
-
-    def _should_trigger_dragonfly(self):
-        return (
-            self.rng.uniform() > self._dragonfly_p_no_looming
-            and not self._dragonfly_is_looming
-        )
+        heading = np.arctan2(xmat[1, 0], xmat[0, 0])
+        return thorax_pos, heading
 
     def _set_dragonfly_rest_pose(self):
-        self.world.set_dragonfly_pose(
-            self,
-            self._dragonfly_rest_pos,
-            (self._dragonfly_rest_yaw, 0.0, 0.0),
-        )
+        self.world.set_dragonfly_pose(self, (0, 0, -80), (0, 0, 0))
 
-    def _start_dragonfly_attack(self, fly_xy, fly_z, fly_heading_vec):
-        fly_heading = np.arctan2(fly_heading_vec[1], fly_heading_vec[0])
-        approach_side = self.rng.choice([-1, 1])
-        rel_angles = self._dragonfly_approach_angles * approach_side + fly_heading
-        if approach_side == -1:
-            rel_angles = rel_angles[::-1]
+    @staticmethod
+    def _point_dragonfly_head_towards_fly(dragonfly_xyz, fly_xyz):
+        yaw = np.arctan2(fly_xyz[1] - dragonfly_xyz[1], fly_xyz[0] - dragonfly_xyz[0])
+        dist = np.linalg.norm(fly_xyz[:2] - dragonfly_xyz[:2])
+        pitch = np.arctan2(dragonfly_xyz[2] - fly_xyz[2], dist)
+        return yaw, pitch
 
-        start_angle = self.rng.uniform(low=rel_angles[0], high=rel_angles[1])
-        mean_fly_vel = self._get_mean_fly_velocity()
-        interception_pos = (
-            fly_xy
-            + mean_fly_vel
-            * self._dragonfly_n_interception_steps
-            * self._dragonfly_dt
+    def _start_dragonfly_attack(self, fly_xyz, fly_heading):
+        angle = (
+            self.rng.choice((-1, 1))
+            * self.rng.uniform(*self._dragonfly_spawn_angle_range)
+            + fly_heading
         )
-        direction = np.array([np.cos(start_angle), np.sin(start_angle)])
-        start_pos = (
-            interception_pos + self._dragonfly_approach_start_radius * direction
+        offset = np.array(
+            [
+                self._dragonfly_spawn_radius * np.cos(angle),
+                self._dragonfly_spawn_radius * np.sin(angle),
+                self.rng.uniform(*self._dragonfly_spawn_z_offset_range),
+            ]
         )
-        end_pos = interception_pos - self._dragonfly_overshoot_dist * direction
-
-        self._dragonfly_trajectory = np.linspace(
-            start_pos, end_pos, len(self._dragonfly_trajectory)
-        )
-        hit_z = fly_z + self._dragonfly_hit_height_offset
-        start_z = max(self._dragonfly_cruise_height, hit_z + 2.5)
-        self._dragonfly_z_trajectory = np.linspace(
-            start_z, hit_z, len(self._dragonfly_trajectory)
-        )
-        self._dragonfly_attack_yaw = start_angle + np.pi
-        self._dragonfly_traj_advancement = 0
+        pos = fly_xyz + offset
+        yaw, pitch = self._point_dragonfly_head_towards_fly(pos, fly_xyz)
+        self.world.set_dragonfly_pose(self, pos, (yaw, pitch, 0.0))
+        self.world.set_dragonfly_rgba(self, (0.15, 0.55, 0.2, 1), segment="head")
         self._dragonfly_is_looming = True
+        self._dragonfly_is_open_loop = False
 
     def _step_dragonfly(self):
-        fly_xy, fly_z, fly_heading_vec = self._get_fly_state()
-        self._update_dragonfly_velocity_buffer(fly_xy)
-
-        if self._should_trigger_dragonfly():
-            self._start_dragonfly_attack(fly_xy, fly_z, fly_heading_vec)
-
-        if self._dragonfly_is_looming:
-            i = self._dragonfly_traj_advancement
-            xy = self._dragonfly_trajectory[i]
-            z = self._dragonfly_z_trajectory[i]
-            self.world.set_dragonfly_pose(
-                self,
-                (xy[0], xy[1], z),
-                (self._dragonfly_attack_yaw, 0.0, 0.0),
+        if not self._dragonfly_is_looming:
+            should_trigger_dragonfly = (
+                self.rng.uniform() > self._dragonfly_p_no_looming
+                and not self._dragonfly_is_looming
             )
-            self._dragonfly_traj_advancement += 1
-            if self._dragonfly_traj_advancement >= len(self._dragonfly_trajectory):
-                self._dragonfly_is_looming = False
+            if should_trigger_dragonfly:
+                fly_xyz, fly_heading = self._get_fly_state()
+                self._start_dragonfly_attack(fly_xyz, fly_heading)
+            else:
                 self._set_dragonfly_rest_pose()
         else:
-            self._set_dragonfly_rest_pose()
+            fly_xyz, fly_heading = self._get_fly_state()
+            dragonfly_mocap_id = self.world._get_dragonfly_mocap_id(self)
+            dragonfly_pos = self.mj_data.mocap_pos[dragonfly_mocap_id].copy()
+            diff = fly_xyz - dragonfly_pos + self._dragonfly_target_offset
+            dist = np.linalg.norm(diff)
+
+            if self._dragonfly_is_open_loop:
+                if (
+                    self._dragonfly_open_loop_current_step
+                    >= self._dragonfly_open_loop_steps
+                ):
+                    self._dragonfly_is_looming = False
+                    self._dragonfly_is_open_loop = False
+                    self._dragonfly_open_loop_current_step = 0
+                    self._set_dragonfly_rest_pose()
+                else:
+                    # linearly increase the dragonfly's speed as it approaches the fly
+                    # up to the max
+                    open_loop_speed = min(
+                        self._dragonfly_max_speed_open_loop,
+                        self._dragonfly_speed_looming
+                        + self._dragonfly_acceleration_open_loop
+                        * self._dragonfly_open_loop_current_step,
+                    )
+                    next_pos = (
+                        dragonfly_pos
+                        + self._dragonfly_open_loop_vel
+                        * self.timestep
+                        * open_loop_speed
+                    )
+                    self.world.set_dragonfly_pose(self, next_pos)
+                    self._dragonfly_open_loop_current_step += 1
+            else:
+                vel = diff / np.linalg.norm(diff) * self._dragonfly_speed_looming
+                new_pos = dragonfly_pos + vel * self.timestep
+                yaw, pitch = self._point_dragonfly_head_towards_fly(new_pos, fly_xyz)
+
+                if dist <= self._dragonfly_open_loop_dist:
+                    self._dragonfly_is_open_loop = True
+                    self._dragonfly_open_loop_vel = vel / np.linalg.norm(vel)
+                    self.world.set_dragonfly_rgba(self, (1, 0, 0, 1), segment="head")
+
+                self.world.set_dragonfly_pose(self, new_pos, (yaw, pitch, 0.0))
 
     def set_wind(self, magnitude, angle_deg):
         angle = np.deg2rad(angle_deg)

@@ -604,6 +604,8 @@ class Fly(BaseCompositionElement):
             mass=my_rigging_config["mass"],
             contype=0,  # contact pairs to be added explicitly later
             conaffinity=0,  # contact pairs to be added explicitly later
+            fluidshape="none" if segment.is_antenna else "ellipsoid",
+            fluidcoef=[0.1, 0, 0, 0, 0],
         )
         return body_element, geom_element
 
