@@ -3,7 +3,7 @@
 Welcome to the Miniproject for BIOENG-456!
 
 ## Setup
-Run `uv sync` to make sure you have all the dependencies installed
+Run`uv sync`  to make sure you have all the dependencies installed
 ```bash
 uv sync
 ```
