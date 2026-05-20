@@ -16,12 +16,12 @@ class Controller:
         self.roi_bottom = 0.60    # 10% sous l'horizon
 
         # Seuil global (réponse proportionnelle au-dessus)
-        self.slow_thr = 0.30
+        self.slow_thr = 0.31
         self.slow_min = 0.4
 
         # Zone de danger central (droit devant)
         self.danger_zone_width = 0.20    # 20% bord interne de chaque œil
-        self.danger_thr        = 0.30    # 30% rempli → urgence
+        self.danger_thr        = 0.37    # 37% rempli → urgence
         self.danger_speed      = 0.05    # quasi stop
         self.danger_turn       = 1.3     # pivot fort
 
@@ -116,8 +116,7 @@ class Controller:
 
         if abs(diff) < self.center_dead_zone:
             drive = np.array([
-                speed + 0.3 * intensity,
-                speed * (1.0 - 0.5 * intensity),
+                speed + 0.3 * intensity, speed * (1.0 - 0.5 * intensity)
             ])
         elif diff > 0:
             # Plus d'herbe à gauche → vire à droite
@@ -190,7 +189,9 @@ class Controller:
 
         action, payload = self._visual_analysis(raw_vision, current_time)
         if action == "turn":
-            drive = payload
+            odor_strength = float(odor[:, 0].mean())  
+            olf_weight = 0.2 + 0.5 * np.tanh(odor_strength * 1e6)
+            drive = olf_weight * drive + (1.0 - olf_weight) * payload
             self._last_mode = "vision"
         elif action == "danger":
             drive = payload
