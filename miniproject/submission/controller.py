@@ -187,11 +187,19 @@ class Controller:
             drive = 0.5 * drive + 0.5 * wind_drive
             self._last_mode = "wind"
 
+        #action, payload = self._visual_analysis(raw_vision, current_time)
+        #if action == "turn":
+            # Ratio dynamique : plus d'olfaction quand l'odeur est forte (proche banane)
+            #odor_strength = float(odor[:, 0].mean())   # intensité moyenne
+            # Ratio = 0.2 (loin, odeur faible) → 0.7 (proche, odeur forte)
+            #olf_weight = 0.2 + 0.5 * np.tanh(odor_strength * 1e6)
+            #drive = olf_weight * drive + (1.0 - olf_weight) * payload
+            #self._last_mode = "vision"
+
+
         action, payload = self._visual_analysis(raw_vision, current_time)
         if action == "turn":
-            odor_strength = float(odor[:, 0].mean())  
-            olf_weight = 0.2 + 0.5 * np.tanh(odor_strength * 1e6)
-            drive = olf_weight * drive + (1.0 - olf_weight) * payload
+            drive = 0.7 * drive + 0.3 * payload
             self._last_mode = "vision"
         elif action == "danger":
             drive = payload
