@@ -40,10 +40,12 @@ class Controller:
         # ── Détection dragonfly ─────────────────────
         self.dragonfly_roi_top = 0.0
         self.dragonfly_roi_bottom = 0.35    # dans le ciel
-        self.dragonfly_thr = 0.005       
-        self.dragonfly_hold_sec = 1.0       # durée approxi de l'attaque
+        self.dragonfly_thr = 0.002        
+        self.dragonfly_hold_sec = 0.75       # durée approxi de l'attaque
         self.dragonfly_hold_max = int(self.dragonfly_hold_sec / 0.02)
         self.dragonfly_hold = 0
+        self.post_attack_grace_sec = 0.7
+        self.post_attack_grace_max = int(self.post_attack_grace_sec / 0.02)
         self.escape_speed = 1.2             
         self.escape_turn = 0.0  
         # mode tank plutot que esquive
@@ -115,6 +117,10 @@ class Controller:
         if dragonfly_max > self.dragonfly_thr:
             self.dragonfly_hold = self.dragonfly_hold_max
         if self.dragonfly_hold > 0:
+            # Sortie anticipée : si le rouge a disparu (dragonfly passée),
+            # on garde encore un mini-délai de sécurité (post_attack_grace) puis on libère
+            if dragonfly_max < self.dragonfly_thr * 0.3:
+                self.dragonfly_hold = min(self.dragonfly_hold, self.post_attack_grace_max)
             self.dragonfly_hold -= 1
             # Mode tank : arrêt complet pour s'ancrer au sol et absorber l'impact
             drive = np.array([self.tank_speed, self.tank_turn])
@@ -233,7 +239,11 @@ class Controller:
     def step(self, sim):
         pos = sim.mj_data.body(f"{sim.fly.name}/").xpos[:2]
         if np.linalg.norm(pos - self.target_xy) < self.stop_distance:
-            return self.turning_controller.step(np.array([0.0, 0.0]))
+            # Mode tank quand la mouche est arrivée
+            self._last_mode = "tank_arrived"
+            return self.turning_controller.step(
+                np.array([self.tank_speed, self.tank_turn])
+            )
 
         t = sim.mj_data.time
         if t - self._last_decision_time >= self.decision_interval:
@@ -246,6 +256,5 @@ class Controller:
             self._last_decision_time = t
 
         return self.turning_controller.step(self._last_control_signal)
-    
     
     
