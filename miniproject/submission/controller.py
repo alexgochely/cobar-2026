@@ -37,6 +37,16 @@ class Controller:
         self.wind_gain = 1.0
         self.wind_threshold = 0.5
 
+        # ── Détection dragonfly ─────────────────────
+        self.dragonfly_roi_top = 0.0
+        self.dragonfly_roi_bottom = 0.35    # dans le ciel
+        self.dragonfly_thr = 0.005       
+        self.dragonfly_hold_sec = 1.0       # durée approxi de l'attaque
+        self.dragonfly_hold_max = int(self.dragonfly_hold_sec / 0.02)
+        self.dragonfly_hold = 0
+        self.escape_speed = 1.2             
+        self.escape_turn = 0.0              
+
         # ── Cadence ──────────────────────────────────────────
         self.decision_interval = 0.02
         self._last_decision_time = -np.inf
@@ -80,8 +90,36 @@ class Controller:
                 dangers.append(grass[:, :zone_w].mean())
 
         return dangers[0], dangers[1]
+    
+    def _detect_dragonfly(self, raw_vision):
+        
+        dragonfly = []
+        for i, img in enumerate(raw_vision):
+            H, W, _ = img.shape
+            roi = img[int(H * self.dragonfly_roi_top):int(H * self.dragonfly_roi_bottom), :, :]
+            r = roi[..., 0].astype(float)
+            g = roi[..., 1].astype(float)
+            b = roi[..., 2].astype(float)
+            red = (r > 100) & (r > 1.5 * g) & (r > 1.5 * b)
+            dragonfly.append(red.mean())
+        return dragonfly[0], dragonfly[1]
 
     def _visual_analysis(self, raw_vision, pref_left):
+
+        #Détection dragonfly (prioritaire)
+        dragonfly_L, dragonfly_R = self._detect_dragonfly(raw_vision)
+        dragonfly_max = max(dragonfly_L, dragonfly_R)
+        if dragonfly_max > self.dragonfly_thr:
+            self.dragonfly_hold = self.dragonfly_hold_max
+        if self.dragonfly_hold > 0:
+            self.dragonfly_hold -= 1
+            # Fuir du côté OPPOSÉ à la dragonfly
+            if dragonfly_L > dragonfly_R:
+                drive = np.array([self.escape_speed, self.escape_turn])
+            else:
+                drive = np.array([self.escape_turn, self.escape_speed])
+            return "escape", drive
+        
         danger_L, danger_R = self._detect_grass(raw_vision)
         self._last_danger_L, self._last_danger_R = danger_L, danger_R
 
@@ -173,8 +211,17 @@ class Controller:
 
         action, payload = self._visual_analysis(raw_vision, pref_left)
 
-        if action == "danger":
-            drive = payload   # override : évitement
+        if action == "escape":
+            drive = payload
+            self._last_mode = "escape"
+            # DEBUG TEMPORAIRE — à supprimer pour le rendu final
+            if not hasattr(self, '_escape_count'):
+                self._escape_count = 0
+            self._escape_count += 1
+            if self._escape_count % 10 == 1:
+                print(f"⚠️  ESCAPE déclenché ! (occurrence #{self._escape_count})")
+        elif action == "danger":
+            drive = payload   # override : évitement herbe
             self._last_mode = "danger"
 
         drive = np.clip(drive, 0.05, 1.4)
@@ -204,3 +251,6 @@ class Controller:
             self._last_decision_time = t
 
         return self.turning_controller.step(self._last_control_signal)
+    
+    
+    
