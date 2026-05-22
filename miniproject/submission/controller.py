@@ -9,44 +9,59 @@ class Controller:
         self.turning_controller = TurningController(sim.timestep)
 
         # ── Olfaction ─────────────────────────────────────────
-        self.attractive_gain = -1000.0
+        self.attractive_gain = -100.0
         self.aversive_gain = 10.0
-        
-        
-        # ── Vision (ROI) ──────────────────────────────────────
+
+        # ── Vision: grass (ROI = lower image, ground) ─────────
         self.roi_top = 0.0
         self.roi_bottom = 0.4
-
-        # Seuil danger frontal (déclenche l'évitement)
         self.danger_thr = 0.035
-
-        # Zone danger frontale (bord interne de chaque œil)
         self.danger_zone_width = 0.5
-        self.danger_speed = 1  # roue rapide pendant l'évitement
-        self.danger_turn = 0.05    # roue lente (côté du virage)
+        self.danger_speed = 1.0     # roue rapide pendant l'évitement
+        self.danger_turn = 0.05     # roue lente (côté du virage)
 
         # ── Refractory danger (anti-flicker override) ────────
         self.danger_hold_sec = 0.3
-        self.danger_hold_max = int(self.danger_hold_sec / 0.02)  # vs decision_interval
+        self.danger_hold_max = int(self.danger_hold_sec / 0.02)
         self.danger_hold = 0
-
-        # ── Lissage commande ─────────────────────────────────
-        self.drive_smoothing = 0.0
-        self.previous_drive = np.array([1.0, 1.0])
 
         # ── Vent ─────────────────────────────────────────────
         self.wind_gain = 1.0
         self.wind_threshold = 0.5
 
-        # ── Détection dragonfly ─────────────────────
+        # ── Détection dragonfly (ROI = ciel, haut de l'image) ──
+        # On détecte le ROUGE : les yeux (rouge sombre) sont visibles
+        # pendant toute l'approche, et la tête devient rouge pur au
+        # plongeon (dist<=15). Le rouge est unique (ciel bleu, sol/herbe
+        # verts), donc même un tout petit peu suffit. Dès qu'on voit du
+        # rouge on COMPTE quelques pas de confirmation, puis on DASH.
         self.dragonfly_roi_top = 0.0
-        self.dragonfly_roi_bottom = 0.35    # dans le ciel
-        self.dragonfly_thr = 0.005       
-        self.dragonfly_hold_sec = 1.0       # durée approxi de l'attaque
+        self.dragonfly_roi_bottom = 0.7
+        self.dragonfly_thr = 0.000005          # un soupçon de rouge suffit (yeux)
+        self.dragonfly_confirm_steps = 25    # pas de confirmation avant le dash
+        self.dragonfly_confirm = 0
+        self.dragonfly_hold_sec = 0.10       # durée du dash
         self.dragonfly_hold_max = int(self.dragonfly_hold_sec / 0.02)
         self.dragonfly_hold = 0
-        self.escape_speed = 1.2             
-        self.escape_turn = 0.0              
+
+        self.dragonfly_freeze_max = self.dragonfly_hold_max
+        self.dragonfly_freeze = 0
+
+        # Stratégie d'esquive : foncer tout droit, ne jamais s'arrêter.
+        # La libellule verrouille sa trajectoire à dist=15 et ne corrige
+        # plus ; toute vitesse latérale au moment du verrou nous sort de
+        # la ligne de frappe.
+        self.escape_speed = 4           # plein gaz, deux roues
+
+        # ── Lissage commande ─────────────────────────────────
+        self.drive_smoothing = 0.0
+        self.previous_drive = np.array([1.0, 1.0])
+
+        # ── Plancher de vitesse ──────────────────────────────
+        # Plancher haut UNIQUEMENT pendant la menace libellule (élan
+        # latéral). Sinon plancher bas pour pivoter franchement.
+        self.drive_floor = 0.1
+        self.drive_ceiling = 5
 
         # ── Cadence ──────────────────────────────────────────
         self.decision_interval = 0.02
@@ -61,6 +76,7 @@ class Controller:
         self._last_danger_L = 0.0
         self._last_danger_R = 0.0
         self._last_mode = "olfaction"
+        self._escape_count = 0
 
         self.fly = sim.fly
 
@@ -91,36 +107,61 @@ class Controller:
                 dangers.append(grass[:, :zone_w].mean())
 
         return dangers[0], dangers[1]
-    
+
     def _detect_dragonfly(self, raw_vision):
-        
-        dragonfly = []
-        for i, img in enumerate(raw_vision):
+        # ROUGE dans le ciel. Les yeux sont rouge sombre ~(153,26,26),
+        # la tête au plongeon est rouge pur ~(255,0,0). On baisse le
+        # seuil sur r pour attraper aussi les yeux (donc détection
+        # précoce sur toute l'approche, pas seulement au plongeon).
+        out = []
+        for img in raw_vision:
             H, W, _ = img.shape
-            roi = img[int(H * self.dragonfly_roi_top):int(H * self.dragonfly_roi_bottom), :, :]
+            roi = img[
+                int(H * self.dragonfly_roi_top):int(H * self.dragonfly_roi_bottom),
+                :, :,
+            ]
             r = roi[..., 0].astype(float)
             g = roi[..., 1].astype(float)
             b = roi[..., 2].astype(float)
-            red = (r > 100) & (r > 1.5 * g) & (r > 1.5 * b)
-            dragonfly.append(red.mean())
-        return dragonfly[0], dragonfly[1]
+            # rouge dominant : r modéré-haut, g et b nettement plus bas
+            red = (r > 120) & (r > 2.0 * g) & (r > 2.0 * b)
+            out.append(red.mean())
+        return out[0], out[1]
 
     def _visual_analysis(self, raw_vision, pref_left):
-
-        #Détection dragonfly (prioritaire)
+        # ── Dragonfly (prioritaire) ──────────────────────────
+        # Dès qu'on voit un peu de rouge, on compte quelques pas de
+        # confirmation, puis on engage un dash sur une durée fixe.
         dragonfly_L, dragonfly_R = self._detect_dragonfly(raw_vision)
         dragonfly_max = max(dragonfly_L, dragonfly_R)
+
         if dragonfly_max > self.dragonfly_thr:
+            self.dragonfly_confirm += 1
+        else:
+            # un flicker isolé ne réinitialise pas brutalement
+            self.dragonfly_confirm = max(0, self.dragonfly_confirm - 1)
+
+        # confirmation atteinte → on engage le dash pour une durée fixe
+        if self.dragonfly_confirm >= self.dragonfly_confirm_steps:
             self.dragonfly_hold = self.dragonfly_hold_max
+
         if self.dragonfly_hold > 0:
             self.dragonfly_hold -= 1
-            # Fuir du côté OPPOSÉ à la dragonfly
-            if dragonfly_L > dragonfly_R:
-                drive = np.array([self.escape_speed, self.escape_turn])
-            else:
-                drive = np.array([self.escape_turn, self.escape_speed])
+            if self.dragonfly_hold == 0:
+                self.dragonfly_confirm = 0           # reset après le dash
+                self.dragonfly_freeze = self.dragonfly_freeze_max  # puis on fige
+            # Dash par l'élan : on fonce TOUT DROIT, plein gaz.
+            drive = np.array([self.escape_speed, self.escape_speed])
             return "escape", drive
-        
+ 
+        # ── Freeze post-dash ─────────────────────────────────
+        # Après le dash, on se fige complètement pendant la même durée :
+        # cible immobile, le dash latéral nous a déjà sortis de la ligne.
+        if self.dragonfly_freeze > 0:
+            self.dragonfly_freeze -= 1
+            return "freeze", np.array([0.0, 0.0])
+
+        # ── Herbe ────────────────────────────────────────────
         danger_L, danger_R = self._detect_grass(raw_vision)
         self._last_danger_L, self._last_danger_R = danger_L, danger_R
 
@@ -131,10 +172,8 @@ class Controller:
             self.danger_hold -= 1
             diff = danger_L - danger_R
             if abs(diff) < 0.05:
-                # quasi symétrique → suivre l'olfaction
                 turn_left = pref_left
             else:
-                # sinon fuir le côté le plus encombré
                 turn_left = diff < 0   # plus d'herbe à droite → tourner à gauche
             if turn_left:
                 drive = np.array([self.danger_turn, self.danger_speed])
@@ -200,7 +239,6 @@ class Controller:
     # ════════════════════════════════════════════════════════════
     def _compute_control_signal(self, odor, raw_vision, antenna):
         drive = self._olfactory_drive(odor)
-        attractive = odor[:,0].reshape(2,2).mean(axis=0)
         self._last_mode = "olfaction"
 
         # côté préféré = côté vers lequel l'olfaction veut tourner
@@ -216,17 +254,20 @@ class Controller:
         if action == "escape":
             drive = payload
             self._last_mode = "escape"
-            # DEBUG TEMPORAIRE — à supprimer pour le rendu final
-            if not hasattr(self, '_escape_count'):
-                self._escape_count = 0
             self._escape_count += 1
             if self._escape_count % 10 == 1:
-                print(f"⚠️  ESCAPE déclenché ! (occurrence #{self._escape_count})")
+                print(f"⚠️  ESCAPE (dash tout droit) — occurrence #{self._escape_count}")
         elif action == "danger":
             drive = payload   # override : évitement herbe
             self._last_mode = "danger"
 
-        drive = np.clip(drive, 0.05, 1.4)
+        # Plancher de vitesse : haut UNIQUEMENT quand la libellule est
+        # la menace active (besoin d'élan latéral). Sinon plancher bas
+        # pour pouvoir pivoter franchement (roue interne proche de 0).
+        near_dragonfly = self.dragonfly_hold > 0
+        floor = self.drive_floor if near_dragonfly else 0.05
+        drive = np.clip(drive, floor, self.drive_ceiling)
+
         drive = (
             self.drive_smoothing * self.previous_drive
             + (1.0 - self.drive_smoothing) * drive
@@ -253,6 +294,3 @@ class Controller:
             self._last_decision_time = t
 
         return self.turning_controller.step(self._last_control_signal)
-    
-    
-    
