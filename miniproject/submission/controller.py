@@ -11,21 +11,22 @@ class Controller:
         # ── Olfaction ─────────────────────────────────────────
         self.attractive_gain = -1000.0
         self.aversive_gain = 10.0
-
+        
+        
         # ── Vision (ROI) ──────────────────────────────────────
         self.roi_top = 0.0
-        self.roi_bottom = 0.45
+        self.roi_bottom = 0.4
 
         # Seuil danger frontal (déclenche l'évitement)
-        self.danger_thr = 0.10
+        self.danger_thr = 0.035
 
         # Zone danger frontale (bord interne de chaque œil)
-        self.danger_zone_width = 0.45
+        self.danger_zone_width = 0.5
         self.danger_speed = 1  # roue rapide pendant l'évitement
         self.danger_turn = 0.05    # roue lente (côté du virage)
 
         # ── Refractory danger (anti-flicker override) ────────
-        self.danger_hold_sec = 0.4
+        self.danger_hold_sec = 0.3
         self.danger_hold_max = int(self.danger_hold_sec / 0.02)  # vs decision_interval
         self.danger_hold = 0
 
@@ -199,6 +200,7 @@ class Controller:
     # ════════════════════════════════════════════════════════════
     def _compute_control_signal(self, odor, raw_vision, antenna):
         drive = self._olfactory_drive(odor)
+        attractive = odor[:,0].reshape(2,2).mean(axis=0)
         self._last_mode = "olfaction"
 
         # côté préféré = côté vers lequel l'olfaction veut tourner
