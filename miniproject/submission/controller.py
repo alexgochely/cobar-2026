@@ -121,7 +121,6 @@ class Controller:
                 dangers.append(grass[:, -zone_w:].mean())
             else:               # right eye -> inspect its left edge
                 dangers.append(grass[:, :zone_w].mean())
-
         return dangers[0], dangers[1]
 
     def _detect_dragonfly(self, raw_vision):
@@ -210,7 +209,6 @@ class Controller:
             attractive_bias = self.attractive_gain * (
                 (attractive[0] - attractive[1]) / attractive.mean()
             )
-
         aversive_bias = 0.0
         if odor.shape[1] > 1:
             aversive = np.average(odor[:, 1].reshape(2, 2), axis=0, weights=[10, 0])
@@ -218,10 +216,8 @@ class Controller:
                 aversive_bias = self.aversive_gain * (
                     (aversive[0] - aversive[1]) / aversive.mean()
                 )
-
         bias = attractive_bias + aversive_bias
         bias_norm = np.tanh(bias ** 2) * np.sign(bias)
-
         drive = np.ones(2)
         drive[int(bias_norm > 0)] -= np.abs(bias_norm) * 0.75
         return drive
