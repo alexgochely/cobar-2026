@@ -1,49 +1,59 @@
-# Miniproject for BIOENG-456: Controlling behavior in animals and robots
+# Submission — COBAR Mini-project
 
-Welcome to the Miniproject for BIOENG-456!
+Reactive controller for `MiniprojectSimulation` level 3. The fly walks toward the banana using olfaction while reacting to three hazards detected through other senses.
 
-## Setup
-Run`uv sync`  to make sure you have all the dependencies installed
-```bash
-uv sync
+## Files
+
+- `controller.py` — the `Controller` class.
+- `run_controller.ipynb` — runner + live debug (raw vision, masks, trajectory, danger curves).
+
+## Architecture
+
+Three senses → three `[left, right]` drives, fused with fixed priority:
+
+```
+dragonfly (escape/freeze)  >  grass  >  olfaction (+ wind blend)
+```
+
+| Sense | Function | Behavior |
+|---|---|---|
+| Olfaction | `_olfactory_drive` | Baseline: bias toward the attractive odor, away from the aversive one. |
+| Vision — grass | `_detect_grass` + `_visual_analysis` | Green dominant in the lower image → turn toward the clear side. |
+| Vision — dragonfly | `_detect_dragonfly` + `_visual_analysis` | Red in the sky → full-throttle dash, then freeze. |
+| Wind | `_wind_drive` | Antenna `qfrc_passive` → bias against the gust. |
+
+## Dragonfly strategy
+
+The dragonfly locks its trajectory at a fixed distance and stops correcting. Once red is confirmed for a few frames:
+
+1. **Dash** straight ahead at full speed to build a lateral offset.
+2. **Freeze** afterwards — stationary target + offset = strike misses.
+
+## Key parameters
+
+```python
+CONTROL_DT = 0.02              # decision cadence (s)
+grass_threshold = 0.035        # grass fraction in lower ROI
+dragonfly_threshold = 5e-6     # a hint of red is enough
+dragonfly_confirm_steps = 25   # frames before dashing
+escape_speed = 4.0             # dash speed
+stop_distance = 2.0            # mm to the banana
 ```
 
 ## Usage
 
-To explore the levels interactively with the keyboard, run the `run_interactive.py` script. Then you can use the WASD keys to control the fly (Q to stop and ESC to exit).
+```python
+from flygym.compose import ActuatorType
+from miniproject.simulation import MiniprojectSimulation
+from submission.controller import Controller
 
-```bash
-uv run miniproject/run_interactive.py --level <level> --seed <seed>
-```
+sim = MiniprojectSimulation(level=3, seed=777)
+controller = Controller(sim)
 
-Replace `<level>` with the desired level number (0 to 4 for the 5 levels) and `<seed>` with the random seed for reproducibility.
-
-If you want to see the fly's vision as well, add the `--render-fly-vision` argument.
-
-> If you have an issue with the rendering (black screen - mainly seen on linux), you can try to add the argument `--dont-use-pygame-rendering` to fallback to opencv rendering instead of pygame. Note: first you will have to run `uv pip install pynput` to get the pynput library.
-
-The `run_simulation.ipynb` notebook contains code that will be used to evaluate the controller.
-
-## Creating a private copy while keeping track of the changes from the public repository
-1. Clone this repository
-```sh
-git clone https://github.com/NeLy-EPFL/cobar-2026 cobar-miniproject-2026
-cd cobar-miniproject-2026
-```
-2. Create a New Private Repository on GitHub:
-- Go to GitHub and create a new private repository.
-- Do not initialize it with a README, .gitignore, or any other files.
-3. Set the New Private Repository as a Remote:
-```sh
-git remote rename origin upstream
-git remote add origin https://github.com/<your_username>/cobar-miniproject-2026
-```
-4. Push the Cloned Repository to Your Private Repository:
-```sh
-git push -u origin main
-```
-5. We will notify you if there are important changes to the repository. To fetch updates from the public repository and merge them into your private repository, use the following commands:
-```sh
-git fetch upstream
-git merge upstream/main
+for _ in range(100000):
+    joint_angles, adhesion = controller.step(sim)
+    sim.set_actuator_inputs(sim.fly.name, ActuatorType.POSITION, joint_angles)
+    sim.set_actuator_inputs(sim.fly.name, ActuatorType.ADHESION, adhesion)
+    sim.step()
+    sim.render_as_needed()
 ```
