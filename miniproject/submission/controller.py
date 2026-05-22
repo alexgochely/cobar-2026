@@ -45,7 +45,10 @@ class Controller:
         self.dragonfly_hold_max = int(self.dragonfly_hold_sec / 0.02)
         self.dragonfly_hold = 0
         self.escape_speed = 1.2             
-        self.escape_turn = 0.0              
+        self.escape_turn = 0.0  
+        # mode tank plutot que esquive
+        self.tank_speed = 0.0   
+        self.tank_turn = 0.0          
 
         # ── Cadence ──────────────────────────────────────────
         self.decision_interval = 0.02
@@ -106,19 +109,16 @@ class Controller:
 
     def _visual_analysis(self, raw_vision, pref_left):
 
-        #Détection dragonfly (prioritaire)
+        #Détection dragonfly (prioritaire) → MODE TANK
         dragonfly_L, dragonfly_R = self._detect_dragonfly(raw_vision)
         dragonfly_max = max(dragonfly_L, dragonfly_R)
         if dragonfly_max > self.dragonfly_thr:
             self.dragonfly_hold = self.dragonfly_hold_max
         if self.dragonfly_hold > 0:
             self.dragonfly_hold -= 1
-            # Fuir du côté OPPOSÉ à la dragonfly
-            if dragonfly_L > dragonfly_R:
-                drive = np.array([self.escape_speed, self.escape_turn])
-            else:
-                drive = np.array([self.escape_turn, self.escape_speed])
-            return "escape", drive
+            # Mode tank : arrêt complet pour s'ancrer au sol et absorber l'impact
+            drive = np.array([self.tank_speed, self.tank_turn])
+            return "tank", drive
         
         danger_L, danger_R = self._detect_grass(raw_vision)
         self._last_danger_L, self._last_danger_R = danger_L, danger_R
@@ -211,15 +211,10 @@ class Controller:
 
         action, payload = self._visual_analysis(raw_vision, pref_left)
 
-        if action == "escape":
+        if action == "tank":
             drive = payload
-            self._last_mode = "escape"
-            # DEBUG TEMPORAIRE — à supprimer pour le rendu final
-            if not hasattr(self, '_escape_count'):
-                self._escape_count = 0
-            self._escape_count += 1
-            if self._escape_count % 10 == 1:
-                print(f"⚠️  ESCAPE déclenché ! (occurrence #{self._escape_count})")
+            self._last_mode = "tank"
+
         elif action == "danger":
             drive = payload   # override : évitement herbe
             self._last_mode = "danger"
